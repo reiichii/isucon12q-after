@@ -44,7 +44,10 @@ def connect_admin_db() -> Engine:
     password = os.getenv("ISUCON_DB_PASSWORD", "isucon")
     database = os.getenv("ISUCON_DB_NAME", "isuports")
 
-    return create_engine(f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{database}", pool_size=10)
+    return create_engine(
+        f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{database}",
+        pool_size=10,
+    )
 
 
 def tenant_db_path(id: int) -> str:
@@ -108,6 +111,7 @@ class FailureResult:
 @dataclass
 class Viewer:
     """アクセスしたきた人の情報"""
+
     role: str
     player_id: str
     tenant_name: str
@@ -149,7 +153,10 @@ def parse_viewer() -> Viewer:
         abort(401, "tenant not found")
 
     if tenant.name != aud[0]:
-        abort(401, f"invalid token: tenant name is not match with {request.host}: {token_str}")
+        abort(
+            401,
+            f"invalid token: tenant name is not match with {request.host}: {token_str}",
+        )
 
     return Viewer(
         role=role,
@@ -181,7 +188,9 @@ def retrieve_tenant_row_from_header() -> TenantRow:
         )
 
     # テナントの存在確認
-    row = admin_db.execute("SELECT * FROM tenant WHERE name = %s", tenant_name).fetchone()
+    row = admin_db.execute(
+        "SELECT * FROM tenant WHERE name = %s", tenant_name
+    ).fetchone()
     if not row:
         abort(401, "tenant not found")
 
@@ -341,7 +350,9 @@ class BillingReport:
     billing_yen: int  # 合計請求金額
 
 
-def billing_report_by_competition(tenant_db: Engine, tenant_id: int, competition_id: str):
+def billing_report_by_competition(
+    tenant_db: Engine, tenant_id: int, competition_id: str
+):
     """大会ごとの課金レポートを計算する"""
     competition = retrieve_competition(tenant_db, competition_id)
     if not competition:
@@ -356,7 +367,10 @@ def billing_report_by_competition(tenant_db: Engine, tenant_id: int, competition
     billing_map = {}
     for vh in visit_history_summary_rows:
         # competition.finished_atよりもあとの場合は、終了後に訪問したとみなして大会開催内アクセス済みとみなさない
-        if bool(competition.finished_at) and competition.finished_at < vh.min_created_at:
+        if (
+            bool(competition.finished_at)
+            and competition.finished_at < vh.min_created_at
+        ):
             continue
         billing_map[str(vh.player_id)] = "visitor"
 
@@ -446,13 +460,20 @@ def tenants_billing_handler():
         if before_id != 0 and before_id <= tenant_row.id:
             continue
         tenant_billing = TenantWithBilling(
-            id=str(tenant_row.id), name=tenant_row.name, display_name=tenant_row.display_name, billing=0
+            id=str(tenant_row.id),
+            name=tenant_row.name,
+            display_name=tenant_row.display_name,
+            billing=0,
         )
         tenant_db = connect_to_tenant_db(int(tenant_row.id))
-        competition_rows = tenant_db.execute("SELECT * FROM competition WHERE tenant_id=?", tenant_row.id).fetchall()
+        competition_rows = tenant_db.execute(
+            "SELECT * FROM competition WHERE tenant_id=?", tenant_row.id
+        ).fetchall()
 
         for competition_row in competition_rows:
-            report = billing_report_by_competition(tenant_db, tenant_row.id, competition_row.id)
+            report = billing_report_by_competition(
+                tenant_db, tenant_row.id, competition_row.id
+            )
             tenant_billing.billing += report.billing_yen
         tenant_billings.append(tenant_billing)
 
@@ -564,7 +585,9 @@ def player_disqualified_handler(player_id: str):
             status=True,
             data={
                 "player": PlayerDetail(
-                    id=player.id, display_name=player.display_name, is_disqualified=player.is_disqualified
+                    id=player.id,
+                    display_name=player.display_name,
+                    is_disqualified=player.is_disqualified,
                 )
             },
         )
@@ -608,7 +631,9 @@ def competitions_add_handler():
     return jsonify(
         SuccessResult(
             status=True,
-            data={"competition": CompetitionDetail(id=id, title=title, is_finished=False)},
+            data={
+                "competition": CompetitionDetail(id=id, title=title, is_finished=False)
+            },
         )
     )
 
@@ -747,7 +772,9 @@ def billing_handler():
 
     billing_reports = []
     for competition_row in competition_rows:
-        report = billing_report_by_competition(tenant_db, viewer.tenant_id, competition_row.id)
+        report = billing_report_by_competition(
+            tenant_db, viewer.tenant_id, competition_row.id
+        )
         billing_reports.append(report)
 
     return jsonify(SuccessResult(status=True, data={"reports": billing_reports}))
@@ -792,7 +819,10 @@ def player_handler(player_id: str):
     if not player:
         abort(404, "player not found")
 
-    competition_rows = tenant_db.execute("SELECT * FROM competition WHERE tenant_id = ? ORDER BY created_at ASC", viewer.tenant_id).fetchall()
+    competition_rows = tenant_db.execute(
+        "SELECT * FROM competition WHERE tenant_id = ? ORDER BY created_at ASC",
+        viewer.tenant_id,
+    ).fetchall()
 
     # player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
     lock_file = flock_by_tenant_id(viewer.tenant_id)
@@ -816,11 +846,15 @@ def player_handler(player_id: str):
 
         player_score_details = []
         for player_score_row in player_score_rows:
-            competition = retrieve_competition(tenant_db, player_score_row.competition_id)
+            competition = retrieve_competition(
+                tenant_db, player_score_row.competition_id
+            )
             if not competition:
                 continue
             player_score_details.append(
-                PlayerScoreDetail(competition_title=competition.title, score=player_score_row.score)
+                PlayerScoreDetail(
+                    competition_title=competition.title, score=player_score_row.score
+                )
             )
     finally:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -831,7 +865,9 @@ def player_handler(player_id: str):
             status=True,
             data={
                 "player": PlayerDetail(
-                    id=player.id, display_name=player.display_name, is_disqualified=player.is_disqualified
+                    id=player.id,
+                    display_name=player.display_name,
+                    is_disqualified=player.is_disqualified,
                 ),
                 "scores": player_score_details,
             },
@@ -868,7 +904,9 @@ def competition_ranking_handler(competition_id):
         abort(404, "competition not found")
 
     now = int(datetime.now().timestamp())
-    tenant_row = admin_db.execute("SELECT * FROM tenant WHERE id = %s", viewer.tenant_id).fetchone()
+    tenant_row = admin_db.execute(
+        "SELECT * FROM tenant WHERE id = %s", viewer.tenant_id
+    ).fetchone()
     if not tenant_row:
         raise RuntimeError(f"Error Select tenant: id={viewer.tenant_id}")
 
@@ -947,7 +985,9 @@ def competition_ranking_handler(competition_id):
             status=True,
             data={
                 "competition": CompetitionDetail(
-                    id=competition.id, title=competition.title, is_finished=bool(competition.finished_at)
+                    id=competition.id,
+                    title=competition.title,
+                    is_finished=bool(competition.finished_at),
                 ),
                 "ranks": paged_ranks,
             },
@@ -974,7 +1014,8 @@ def player_competitions_handler():
 
 def competitions_handler(viewer: Viewer, tenant_db):
     competition_rows = tenant_db.execute(
-        "SELECT * FROM competition WHERE tenant_id=? ORDER BY created_at DESC", (viewer.tenant_id)
+        "SELECT * FROM competition WHERE tenant_id=? ORDER BY created_at DESC",
+        (viewer.tenant_id),
     ).fetchall()
 
     competition_details = []
@@ -987,7 +1028,9 @@ def competitions_handler(viewer: Viewer, tenant_db):
             )
         )
 
-    return jsonify(SuccessResult(status=True, data={"competitions": competition_details}))
+    return jsonify(
+        SuccessResult(status=True, data={"competitions": competition_details})
+    )
 
 
 @dataclass
@@ -1040,7 +1083,9 @@ def me_handler():
             data={
                 "tenant": tenant_detail,
                 "me": PlayerDetail(
-                    id=player.id, display_name=player.display_name, is_disqualified=player.is_disqualified
+                    id=player.id,
+                    display_name=player.display_name,
+                    is_disqualified=player.is_disqualified,
                 ),
                 "role": viewer.role,
                 "logged_in": True,
