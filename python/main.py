@@ -706,25 +706,34 @@ def competition_score_handler(competition_id: str):
                 continue
             player_id = row[0]
             score_str = row[1]
-            if retrieve_player(tenant_db, player_id) is None:
-                # 存在しない参加者が含まれている
-                abort(400, f"player not found: {player_id}")
-
             score = int(score_str, 10)
             id = dispense_id()
             now = int(datetime.now().timestamp())
             player_score_rows.append(
-                PlayerScoreRow(
-                    id=id,
-                    tenant_id=viewer.tenant_id,
-                    player_id=player_id,
-                    competition_id=competition_id,
-                    score=score,
-                    row_num=row_num,
-                    created_at=now,
-                    updated_at=now,
-                )
+                {
+                    "id": id,
+                    "tenant_id": viewer.tenant_id,
+                    "player_id": player_id,
+                    "competition_id": competition_id,
+                    "score": score,
+                    "row_num": row_num,
+                    "created_at": now,
+                    "updated_at": now,
+                }
             )
+
+        # 存在しない参加者が含まれていたら400を返す
+        exists_player_count = tenant_db.execute(
+            "SELECT COUNT(DISTINCT id) as count FROM player WHERE id IN ("
+            + ",".join([f"\"{row['player_id']}\"" for row in player_score_rows])
+            + ")",
+        ).fetchone()
+        if (
+            len(list(set([row["player_id"] for row in player_score_rows])))
+            != exists_player_count[0]
+        ):
+            # 存在しない参加者が含まれている
+            abort(400, "player not found")
 
         tenant_db.execute(
             "DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
@@ -732,18 +741,8 @@ def competition_score_handler(competition_id: str):
             competition_id,
         )
 
-        for player_score_row in player_score_rows:
-            tenant_db.execute(
-                "INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                player_score_row.id,
-                player_score_row.tenant_id,
-                player_score_row.player_id,
-                player_score_row.competition_id,
-                player_score_row.score,
-                player_score_row.row_num,
-                player_score_row.created_at,
-                player_score_row.updated_at,
-            )
+        statement = "INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)"
+        tenant_db.execute(statement, player_score_rows)
     finally:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         lock_file.close()
