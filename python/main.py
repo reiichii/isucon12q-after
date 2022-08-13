@@ -931,7 +931,7 @@ def competition_ranking_handler(competition_id):
 
     try:
         player_score_rows = tenant_db.execute(
-            "SELECT player_score.score, player_score.row_num, player.id, player.display_name FROM player_score INNER JOIN player ON player_score.player_id = player.id WHERE player_score.tenant_id = ? AND player_score.competition_id = ? ORDER BY player_score.row_num DESC",
+            "SELECT player_score.score, player_score.row_num, player.id AS player_id, player.display_name FROM player_score INNER JOIN player ON player_score.player_id = player.id WHERE player_score.tenant_id = ? AND player_score.competition_id = ? ORDER BY player_score.row_num DESC",
             tenant_row.id,
             competition_id,
         ).fetchall()
@@ -949,7 +949,7 @@ def competition_ranking_handler(competition_id):
                 CompetitionRank(
                     rank=0,
                     score=player_score_row.score,
-                    player_id=player_score_row.id,
+                    player_id=player_score_row.player_id,
                     player_display_name=player_score_row.display_name,
                     row_num=player_score_row.row_num,
                 )
