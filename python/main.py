@@ -263,24 +263,6 @@ class PlayerScoreRow:
     updated_at: int
 
 
-def lock_file_path(id: int) -> str:
-    """排他ロックのためのファイル名を生成する"""
-    tenant_db_dir = os.getenv("ISUCON_TENANT_DB_DIR", "../tenant_db")
-    return os.path.join(tenant_db_dir, f"{id}.lock")
-
-
-def flock_by_tenant_id(tenant_id: int) -> Optional[TextIOWrapper]:
-    """排他ロックする"""
-    path = lock_file_path(tenant_id)
-    lock_file = open(path, "a")
-    try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        return lock_file
-    except OSError:
-        lock_file.close()
-        return None
-
-
 @app.route("/api/admin/tenants/add", methods=["POST"])
 def tenants_add_handler():
     """
@@ -374,34 +356,25 @@ def billing_report_by_competition(
             continue
         billing_map[str(vh.player_id)] = "visitor"
 
-    # player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-    lock_file = flock_by_tenant_id(tenant_id)
-    if not lock_file:
-        raise RuntimeError("error flock_by_tenant_id")
+    # スコアを登録した参加者のIDを取得する
+    scored_player_id_rows = tenant_db.execute(
+        "SELECT DISTINCT(player_id) FROM player_score WHERE tenant_id = ? AND competition_id = ?",
+        tenant_id,
+        competition.id,
+    ).fetchall()
 
-    try:
-        # スコアを登録した参加者のIDを取得する
-        scored_player_id_rows = tenant_db.execute(
-            "SELECT DISTINCT(player_id) FROM player_score WHERE tenant_id = ? AND competition_id = ?",
-            tenant_id,
-            competition.id,
-        ).fetchall()
+    for pid in scored_player_id_rows:
+        # スコアが登録されている参加者
+        billing_map[str(pid.player_id)] = "player"
 
-        for pid in scored_player_id_rows:
-            # スコアが登録されている参加者
-            billing_map[str(pid.player_id)] = "player"
-
-        player_count = 0
-        visitor_count = 0
-        if bool(competition.finished_at):
-            for category in billing_map.values():
-                if category == "player":
-                    player_count += 1
-                if category == "visitor":
-                    visitor_count += 1
-    finally:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-        lock_file.close()
+    player_count = 0
+    visitor_count = 0
+    if bool(competition.finished_at):
+        for category in billing_map.values():
+            if category == "player":
+                player_count += 1
+            if category == "visitor":
+                visitor_count += 1
 
     return BillingReport(
         competition_id=competition.id,
@@ -692,49 +665,45 @@ def competition_score_handler(competition_id: str):
     if header != ["player_id", "score"]:
         abort(400, "invalid CSV headers")
 
-    # DELETEしたタイミングで参照が来ると空っぽのランキングになるのでロックする
-    lock_file = flock_by_tenant_id(viewer.tenant_id)
-    if not lock_file:
-        raise RuntimeError("error flock_by_tenant_id")
+    row_num = 0
+    player_score_rows = []
+    for row in csv_reader:
+        row_num += 1
+        if len(row) != 2:
+            continue
+        player_id = row[0]
+        score_str = row[1]
+        score = int(score_str, 10)
+        id = dispense_id()
+        now = int(datetime.now().timestamp())
+        player_score_rows.append(
+            {
+                "id": id,
+                "tenant_id": viewer.tenant_id,
+                "player_id": player_id,
+                "competition_id": competition_id,
+                "score": score,
+                "row_num": row_num,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+
+    # 存在しない参加者が含まれていたら400を返す
+    exists_player_count = tenant_db.execute(
+        "SELECT COUNT(DISTINCT id) as count FROM player WHERE id IN ("
+        + ",".join([f"\"{row['player_id']}\"" for row in player_score_rows])
+        + ")",
+    ).fetchone()
+    if (
+        len(list(set([row["player_id"] for row in player_score_rows])))
+        != exists_player_count[0]
+    ):
+        # 存在しない参加者が含まれている
+        abort(400, "player not found")
 
     try:
-        row_num = 0
-        player_score_rows = []
-        for row in csv_reader:
-            row_num += 1
-            if len(row) != 2:
-                continue
-            player_id = row[0]
-            score_str = row[1]
-            score = int(score_str, 10)
-            id = dispense_id()
-            now = int(datetime.now().timestamp())
-            player_score_rows.append(
-                {
-                    "id": id,
-                    "tenant_id": viewer.tenant_id,
-                    "player_id": player_id,
-                    "competition_id": competition_id,
-                    "score": score,
-                    "row_num": row_num,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-            )
-
-        # 存在しない参加者が含まれていたら400を返す
-        exists_player_count = tenant_db.execute(
-            "SELECT COUNT(DISTINCT id) as count FROM player WHERE id IN ("
-            + ",".join([f"\"{row['player_id']}\"" for row in player_score_rows])
-            + ")",
-        ).fetchone()
-        if (
-            len(list(set([row["player_id"] for row in player_score_rows])))
-            != exists_player_count[0]
-        ):
-            # 存在しない参加者が含まれている
-            abort(400, "player not found")
-
+        trans_ctx = tenant_db.begin()
         tenant_db.execute(
             "DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
             viewer.tenant_id,
@@ -743,9 +712,9 @@ def competition_score_handler(competition_id: str):
 
         statement = "INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)"
         tenant_db.execute(statement, player_score_rows)
-    finally:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-        lock_file.close()
+        trans_ctx.transaction.commit()
+    except:
+        trans_ctx.transaction.rollback()
 
     return jsonify(SuccessResult(status=True, data={"rows": len(player_score_rows)}))
 
@@ -823,41 +792,30 @@ def player_handler(player_id: str):
         viewer.tenant_id,
     ).fetchall()
 
-    # player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-    lock_file = flock_by_tenant_id(viewer.tenant_id)
-    if not lock_file:
-        raise RuntimeError("error flock_by_tenant_id")
+    player_score_rows = []
+    for competition_row in competition_rows:
+        # 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
+        player_score_row = tenant_db.execute(
+            "SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
+            viewer.tenant_id,
+            competition_row.id,
+            player.id,
+        ).fetchone()
+        if not player_score_row:
+            # 行がない = スコアが記録されてない
+            continue
+        player_score_rows.append(PlayerScoreRow(**player_score_row))
 
-    try:
-        player_score_rows = []
-        for competition_row in competition_rows:
-            # 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
-            player_score_row = tenant_db.execute(
-                "SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
-                viewer.tenant_id,
-                competition_row.id,
-                player.id,
-            ).fetchone()
-            if not player_score_row:
-                # 行がない = スコアが記録されてない
-                continue
-            player_score_rows.append(PlayerScoreRow(**player_score_row))
-
-        player_score_details = []
-        for player_score_row in player_score_rows:
-            competition = retrieve_competition(
-                tenant_db, player_score_row.competition_id
+    player_score_details = []
+    for player_score_row in player_score_rows:
+        competition = retrieve_competition(tenant_db, player_score_row.competition_id)
+        if not competition:
+            continue
+        player_score_details.append(
+            PlayerScoreDetail(
+                competition_title=competition.title, score=player_score_row.score
             )
-            if not competition:
-                continue
-            player_score_details.append(
-                PlayerScoreDetail(
-                    competition_title=competition.title, score=player_score_row.score
-                )
-            )
-    finally:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-        lock_file.close()
+        )
 
     return jsonify(
         SuccessResult(
@@ -923,58 +881,49 @@ def competition_ranking_handler(competition_id):
     if rank_after_str:
         rank_after = int(rank_after_str)
 
-    # player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-    lock_file = flock_by_tenant_id(viewer.tenant_id)
-    if not lock_file:
-        raise RuntimeError("error flock_by_tenant_id")
+    player_score_rows = tenant_db.execute(
+        "SELECT player_score.score, player_score.row_num, player.id AS player_id, player.display_name FROM player_score INNER JOIN player ON player_score.player_id = player.id WHERE player_score.tenant_id = ? AND player_score.competition_id = ? ORDER BY player_score.row_num DESC",
+        tenant_row.id,
+        competition_id,
+    ).fetchall()
 
-    try:
-        player_score_rows = tenant_db.execute(
-            "SELECT player_score.score, player_score.row_num, player.id AS player_id, player.display_name FROM player_score INNER JOIN player ON player_score.player_id = player.id WHERE player_score.tenant_id = ? AND player_score.competition_id = ? ORDER BY player_score.row_num DESC",
-            tenant_row.id,
-            competition_id,
-        ).fetchall()
+    ranks = []
+    scored_player_set = {}
+    for player_score_row in player_score_rows:
+        # player_scoreが同一player_id内ではrow_numの降順でソートされているので
+        # 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
+        if scored_player_set.get(player_score_row.player_id) is not None:
+            continue
 
-        ranks = []
-        scored_player_set = {}
-        for player_score_row in player_score_rows:
-            # player_scoreが同一player_id内ではrow_numの降順でソートされているので
-            # 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
-            if scored_player_set.get(player_score_row.player_id) is not None:
-                continue
-
-            scored_player_set[player_score_row.player_id] = {}
-            ranks.append(
-                CompetitionRank(
-                    rank=0,
-                    score=player_score_row.score,
-                    player_id=player_score_row.player_id,
-                    player_display_name=player_score_row.display_name,
-                    row_num=player_score_row.row_num,
-                )
+        scored_player_set[player_score_row.player_id] = {}
+        ranks.append(
+            CompetitionRank(
+                rank=0,
+                score=player_score_row.score,
+                player_id=player_score_row.player_id,
+                player_display_name=player_score_row.display_name,
+                row_num=player_score_row.row_num,
             )
+        )
 
-        ranks.sort(key=lambda rank: rank.row_num)
-        ranks.sort(key=lambda rank: rank.score, reverse=True)
+    ranks.sort(key=lambda rank: rank.row_num)
+    ranks.sort(key=lambda rank: rank.score, reverse=True)
 
-        paged_ranks = []
-        for i, rank in enumerate(ranks):
-            if i < rank_after:
-                continue
-            paged_ranks.append(
-                CompetitionRank(
-                    rank=i + 1,
-                    score=rank.score,
-                    player_id=rank.player_id,
-                    player_display_name=rank.player_display_name,
-                    row_num=0,
-                )
+    paged_ranks = []
+    for i, rank in enumerate(ranks):
+        if i < rank_after:
+            continue
+        paged_ranks.append(
+            CompetitionRank(
+                rank=i + 1,
+                score=rank.score,
+                player_id=rank.player_id,
+                player_display_name=rank.player_display_name,
+                row_num=0,
             )
-            if len(paged_ranks) >= 100:
-                break
-    finally:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-        lock_file.close()
+        )
+        if len(paged_ranks) >= 100:
+            break
 
     return jsonify(
         SuccessResult(
