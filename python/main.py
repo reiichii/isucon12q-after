@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import jwt
 from flask import Flask, abort, jsonify, request
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, OperationalError
 from werkzeug.exceptions import HTTPException
@@ -61,6 +61,16 @@ def connect_to_tenant_db(id: int) -> Engine:
     path = tenant_db_path(id)
     engine = create_engine(f"sqlite:///{path}")
     return initialize_sql_logger(engine)
+
+
+@event.listens_for(Engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    dbapi_connection.isolation_level = None
+
+
+@event.listens_for(Engine, "begin")
+def do_begin(conn):
+    conn.exec_driver_sql("BEGIN EXCLUSIVE")
 
 
 def create_tenant_db(id: int):
