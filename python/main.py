@@ -376,15 +376,26 @@ def billing_report_by_competition(
             if category == "visitor":
                 visitor_count += 1
 
-    return BillingReport(
-        competition_id=competition.id,
-        competition_title=competition.title,
-        player_count=player_count,
-        visitor_count=visitor_count,
-        billing_player_yen=100 * player_count,
-        billing_visitor_yen=10 * visitor_count,
-        billing_yen=100 * player_count + 10 * visitor_count,
+    admin_db.execute(
+        "INSERT INTO billing_report (tenant_id, competition_id, competition_title, player_count, visitor_count, billing_player_yen, billing_visitor_yen, billing_yen) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        tenant_id,
+        competition.id,
+        competition.title,
+        player_count,
+        visitor_count,
+        100 * player_count,
+        10 * visitor_count,
+        100 * player_count + 10 * visitor_count,
     )
+    # return BillingReport(
+    #     competition_id=competition.id,
+    #     competition_title=competition.title,
+    #     player_count=player_count,
+    #     visitor_count=visitor_count,
+    #     billing_player_yen=100 * player_count,
+    #     billing_visitor_yen=10 * visitor_count,
+    #     billing_yen=100 * player_count + 10 * visitor_count,
+    # )
 
 
 @dataclass
@@ -444,10 +455,15 @@ def tenants_billing_handler():
         ).fetchall()
 
         for competition_row in competition_rows:
-            report = billing_report_by_competition(
-                tenant_db, tenant_row.id, competition_row.id
-            )
-            tenant_billing.billing += report.billing_yen
+            # report = billing_report_by_competition(
+            #     tenant_db, tenant_row.id, competition_row.id
+            # )
+            report = admin_db.execute(
+                "SELECT * FROM billing_report WHERE tenant_id=%s AND competition_id=%s",
+                tenant_row.id,
+                competition_row.id,
+            ).fetchone()
+            tenant_billing.billing += report.billing_yen if report else 0
         tenant_billings.append(tenant_billing)
 
         if len(tenant_billings) >= 10:
@@ -636,6 +652,8 @@ def competition_finish_handler(competition_id: str):
         competition_id,
     )
 
+    billing_report_by_competition(tenant_db, competition.tenant_id, competition_id)
+
     return jsonify({"status": True})
 
 
@@ -740,8 +758,22 @@ def billing_handler():
 
     billing_reports = []
     for competition_row in competition_rows:
-        report = billing_report_by_competition(
-            tenant_db, viewer.tenant_id, competition_row.id
+        # report = billing_report_by_competition(
+        #     tenant_db, viewer.tenant_id, competition_row.id
+        # )
+        r = admin_db.execute(
+            "SELECT * FROM billing_report WHERE tenant_id=%s AND competition_id=%s",
+            viewer.tenant_id,
+            competition_row.id,
+        ).fetchone()
+        report = BillingReport(
+            competition_id=competition_row.id,
+            competition_title=competition_row.title,
+            player_count=r.player_count if r else 0,
+            visitor_count=r.visitor_count if r else 0,
+            billing_player_yen=r.billing_player_yen if r else 0,
+            billing_visitor_yen=r.billing_visitor_yen if r else 0,
+            billing_yen=r.billing_yen if r else 0,
         )
         billing_reports.append(report)
 
@@ -1048,6 +1080,10 @@ def initialize_handler():
     """
     try:
         subprocess.run([INITIALIZE_SCRIPT], shell=True)
+        subprocess.run(
+            ["mysql -uroot -proot isuports < /tmp/initial_billing_report.dump"],
+            shell=True,
+        )
     except subprocess.CalledProcessError as e:
         return f"error subprocess.run: {e.output} {e.stderr}"
 
