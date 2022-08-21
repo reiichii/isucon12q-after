@@ -685,7 +685,7 @@ def competition_score_handler(competition_id: str):
         abort(400, "invalid CSV headers")
 
     row_num = 0
-    player_score_rows = {}
+    player_score_rows = []
     for row in csv_reader:
         row_num += 1
         if len(row) != 2:
@@ -695,26 +695,28 @@ def competition_score_handler(competition_id: str):
         score = int(score_str, 10)
         id = dispense_id()
         now = int(datetime.now().timestamp())
-        player_score_rows[player_id] = {
-            "id": id,
-            "tenant_id": viewer.tenant_id,
-            "player_id": player_id,
-            "competition_id": competition_id,
-            "score": score,
-            "row_num": row_num,
-            "created_at": now,
-            "updated_at": now,
-        }
+        player_score_rows.append(
+            {
+                "id": id,
+                "tenant_id": viewer.tenant_id,
+                "player_id": player_id,
+                "competition_id": competition_id,
+                "score": score,
+                "row_num": row_num,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
 
     # 存在しない参加者が含まれていたら400を返す
     exists_player_count = tenant_db.execute(
         "SELECT COUNT(DISTINCT id) as count FROM player WHERE id IN ("
         + ",".join(["?" for _ in player_score_rows])
         + ")",
-        *[row["player_id"] for row in player_score_rows.values()],
+        *[row["player_id"] for row in player_score_rows],
     ).fetchone()
     if (
-        len(list(set([row["player_id"] for row in player_score_rows.values()])))
+        len(list(set([row["player_id"] for row in player_score_rows])))
         != exists_player_count[0]
     ):
         # 存在しない参加者が含まれている
@@ -729,7 +731,7 @@ def competition_score_handler(competition_id: str):
         )
 
         statement = "INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)"
-        tenant_db.execute(statement, [row for row in player_score_rows.values()])
+        tenant_db.execute(statement, player_score_rows)
         trans_ctx.transaction.commit()
     except:
         trans_ctx.transaction.rollback()
