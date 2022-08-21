@@ -254,6 +254,7 @@ def retrieve_competition(tenant_db: Engine, id: str) -> Optional[CompetitionRow]
 @dataclass
 class PlayerScoreRow:
     tenant_id: int
+    title: str
     id: str
     player_id: str
     competition_id: str
@@ -684,7 +685,7 @@ def competition_score_handler(competition_id: str):
         abort(400, "invalid CSV headers")
 
     row_num = 0
-    player_score_rows = []
+    player_score_rows = {}
     for row in csv_reader:
         row_num += 1
         if len(row) != 2:
@@ -694,27 +695,26 @@ def competition_score_handler(competition_id: str):
         score = int(score_str, 10)
         id = dispense_id()
         now = int(datetime.now().timestamp())
-        player_score_rows.append(
-            {
-                "id": id,
-                "tenant_id": viewer.tenant_id,
-                "player_id": player_id,
-                "competition_id": competition_id,
-                "score": score,
-                "row_num": row_num,
-                "created_at": now,
-                "updated_at": now,
-            }
-        )
+        player_score_rows[player_id] = {
+            "id": id,
+            "tenant_id": viewer.tenant_id,
+            "player_id": player_id,
+            "competition_id": competition_id,
+            "score": score,
+            "row_num": row_num,
+            "created_at": now,
+            "updated_at": now,
+        }
 
     # 存在しない参加者が含まれていたら400を返す
     exists_player_count = tenant_db.execute(
         "SELECT COUNT(DISTINCT id) as count FROM player WHERE id IN ("
-        + ",".join([f"\"{row['player_id']}\"" for row in player_score_rows])
+        + ",".join(["?" for _ in player_score_rows])
         + ")",
+        *[row["player_id"] for row in player_score_rows.values()],
     ).fetchone()
     if (
-        len(list(set([row["player_id"] for row in player_score_rows])))
+        len(list(set([row["player_id"] for row in player_score_rows.values()])))
         != exists_player_count[0]
     ):
         # 存在しない参加者が含まれている
@@ -729,7 +729,7 @@ def competition_score_handler(competition_id: str):
         )
 
         statement = "INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)"
-        tenant_db.execute(statement, player_score_rows)
+        tenant_db.execute(statement, [row for row in player_score_rows.values()])
         trans_ctx.transaction.commit()
     except:
         trans_ctx.transaction.rollback()
@@ -826,9 +826,8 @@ def player_handler(player_id: str):
 
     player_score_rows = []
     for competition_row in competition_rows:
-        # 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
         player_score_row = tenant_db.execute(
-            "SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
+            "SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ?",
             viewer.tenant_id,
             competition_row.id,
             player.id,
@@ -836,16 +835,25 @@ def player_handler(player_id: str):
         if not player_score_row:
             # 行がない = スコアが記録されてない
             continue
-        player_score_rows.append(PlayerScoreRow(**player_score_row))
+        player_score_rows.append(
+            PlayerScoreRow(
+                tenant_id=player_score_row.tenant_id,
+                title=competition_row.title,
+                id=player_score_row.id,
+                player_id=player_score_row.player_id,
+                competition_id=player_score_row.competition_id,
+                score=player_score_row.score,
+                row_num=player_score_row.row_num,
+                created_at=player_score_row.created_at,
+                updated_at=player_score_row.updated_at,
+            )
+        )
 
     player_score_details = []
     for player_score_row in player_score_rows:
-        competition = retrieve_competition(tenant_db, player_score_row.competition_id)
-        if not competition:
-            continue
         player_score_details.append(
             PlayerScoreDetail(
-                competition_title=competition.title, score=player_score_row.score
+                competition_title=player_score_row.title, score=player_score_row.score
             )
         )
 
