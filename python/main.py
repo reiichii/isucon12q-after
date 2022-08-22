@@ -821,35 +821,19 @@ def player_handler(player_id: str):
     if not player:
         abort(404, "player not found")
 
-    competition_rows = tenant_db.execute(
-        "SELECT * FROM competition WHERE tenant_id = ? ORDER BY created_at ASC",
+    query = """
+SELECT c.title AS title, p.score AS score
+FROM player_score AS p
+INNER JOIN competition AS c ON c.id = p.competition_id
+WHERE c.tenant_id = ?
+AND p.player_id = ?
+ORDER BY c.created_at ASC
+    """
+    player_score_rows = tenant_db.execute(
+        query,
         viewer.tenant_id,
+        player.id,
     ).fetchall()
-
-    player_score_rows = []
-    for competition_row in competition_rows:
-        player_score_row = tenant_db.execute(
-            "SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ?",
-            viewer.tenant_id,
-            competition_row.id,
-            player.id,
-        ).fetchone()
-        if not player_score_row:
-            # 行がない = スコアが記録されてない
-            continue
-        player_score_rows.append(
-            PlayerScoreRow(
-                tenant_id=player_score_row.tenant_id,
-                title=competition_row.title,
-                id=player_score_row.id,
-                player_id=player_score_row.player_id,
-                competition_id=player_score_row.competition_id,
-                score=player_score_row.score,
-                row_num=player_score_row.row_num,
-                created_at=player_score_row.created_at,
-                updated_at=player_score_row.updated_at,
-            )
-        )
 
     player_score_details = []
     for player_score_row in player_score_rows:
