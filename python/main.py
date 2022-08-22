@@ -758,19 +758,18 @@ def billing_handler():
     if not competition_rows:
         raise RuntimeError("error Select competition")
 
+    reports = admin_db.execute(
+        "SELECT * FROM billing_report WHERE tenant_id=%s AND competition_id IN ("
+        + ",".join(["?" for _ in competition_rows])
+        + ")",
+        viewer.tenant_id,
+        *[row.id for row in competition_rows],
+    ).fetchall()
     billing_reports = []
-    for competition_row in competition_rows:
-        # report = billing_report_by_competition(
-        #     tenant_db, viewer.tenant_id, competition_row.id
-        # )
-        r = admin_db.execute(
-            "SELECT * FROM billing_report WHERE tenant_id=%s AND competition_id=%s",
-            viewer.tenant_id,
-            competition_row.id,
-        ).fetchone()
+    for r in reports:
         report = BillingReport(
-            competition_id=competition_row.id,
-            competition_title=competition_row.title,
+            competition_id=r.competition_id,
+            competition_title=r.competition_title,
             player_count=r.player_count if r else 0,
             visitor_count=r.visitor_count if r else 0,
             billing_player_yen=r.billing_player_yen if r else 0,
