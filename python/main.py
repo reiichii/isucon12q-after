@@ -722,19 +722,14 @@ def competition_score_handler(competition_id: str):
         # 存在しない参加者が含まれている
         abort(400, "player not found")
 
-    try:
-        trans_ctx = tenant_db.begin()
-        tenant_db.execute(
+    with tenant_db.connect() as conn:
+        conn.exeute(
             "DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
             viewer.tenant_id,
             competition_id,
         )
-
         statement = "INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)"
-        tenant_db.execute(statement, player_score_rows)
-        trans_ctx.transaction.commit()
-    except:
-        trans_ctx.transaction.rollback()
+        conn.execute(statement, player_score_rows)
 
     return jsonify(SuccessResult(status=True, data={"rows": len(player_score_rows)}))
 
