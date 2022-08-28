@@ -722,8 +722,9 @@ def competition_score_handler(competition_id: str):
         # 存在しない参加者が含まれている
         abort(400, "player not found")
 
-    with tenant_db.connect() as conn:
-        conn.exeute(
+    with tenant_db.begin() as conn:
+        conn.execution_options(isolation_level="SERIALIZABLE")
+        conn.execute(
             "DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
             viewer.tenant_id,
             competition_id,
@@ -755,7 +756,7 @@ def billing_handler():
 
     reports = admin_db.execute(
         "SELECT * FROM billing_report WHERE tenant_id=%s AND competition_id IN ("
-        + ",".join(["?" for _ in competition_rows])
+        + ",".join(["%s" for _ in competition_rows])
         + ")",
         viewer.tenant_id,
         *[row.id for row in competition_rows],
