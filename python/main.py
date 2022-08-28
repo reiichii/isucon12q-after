@@ -761,17 +761,32 @@ def billing_handler():
         viewer.tenant_id,
         *[row.id for row in competition_rows],
     ).fetchall()
+
     billing_reports = []
-    for r in reports:
-        report = BillingReport(
-            competition_id=r.competition_id,
-            competition_title=r.competition_title,
-            player_count=r.player_count if r else 0,
-            visitor_count=r.visitor_count if r else 0,
-            billing_player_yen=r.billing_player_yen if r else 0,
-            billing_visitor_yen=r.billing_visitor_yen if r else 0,
-            billing_yen=r.billing_yen if r else 0,
-        )
+    for row in competition_rows:
+        if row.finished_at is None:
+            report = BillingReport(
+                competition_id=row.id,
+                competition_title=row.title,
+                player_count=0,
+                visitor_count=0,
+                billing_player_yen=0,
+                billing_visitor_yen=0,
+                billing_yen=0,
+            )
+            billing_reports.append(report)
+            continue
+        for r in reports:
+            if r.competition_id == row.id:
+                report = BillingReport(
+                    competition_id=r.competition_id,
+                    competition_title=r.competition_title,
+                    player_count=r.player_count if r else 0,
+                    visitor_count=r.visitor_count if r else 0,
+                    billing_player_yen=r.billing_player_yen if r else 0,
+                    billing_visitor_yen=r.billing_visitor_yen if r else 0,
+                    billing_yen=r.billing_yen if r else 0,
+                )
         billing_reports.append(report)
 
     return jsonify(SuccessResult(status=True, data={"reports": billing_reports}))
