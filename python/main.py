@@ -59,7 +59,7 @@ def tenant_db_path(id: int) -> str:
 def connect_to_tenant_db(id: int) -> Engine:
     """テナントDBに接続する"""
     path = tenant_db_path(id)
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(f"sqlite:///{path}?timeout=30").execution_options(isolation_level="SERIALIZABLE")
     return initialize_sql_logger(engine)
 
 

@@ -1,0 +1,2 @@
+(1) near "exit": syntax error in "exit
+;"
