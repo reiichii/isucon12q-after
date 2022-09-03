@@ -59,7 +59,9 @@ def tenant_db_path(id: int) -> str:
 def connect_to_tenant_db(id: int) -> Engine:
     """テナントDBに接続する"""
     path = tenant_db_path(id)
-    engine = create_engine(f"sqlite:///{path}?timeout=30").execution_options(isolation_level="SERIALIZABLE")
+    engine = create_engine(f"sqlite:///{path}?timeout=30").execution_options(
+        isolation_level="SERIALIZABLE"
+    )
     return initialize_sql_logger(engine)
 
 
@@ -388,15 +390,6 @@ def billing_report_by_competition(
         10 * visitor_count,
         100 * player_count + 10 * visitor_count,
     )
-    # return BillingReport(
-    #     competition_id=competition.id,
-    #     competition_title=competition.title,
-    #     player_count=player_count,
-    #     visitor_count=visitor_count,
-    #     billing_player_yen=100 * player_count,
-    #     billing_visitor_yen=10 * visitor_count,
-    #     billing_yen=100 * player_count + 10 * visitor_count,
-    # )
 
 
 @dataclass
@@ -732,6 +725,59 @@ def competition_score_handler(competition_id: str):
         statement = "INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)"
         conn.execute(statement, player_score_rows)
 
+    # ranking生成
+    # player_display_nameを取得
+    name_rows = tenant_db.execute(
+        "SELECT id, display_name FROM player WHERE id IN ("
+        + ",".join(["?" for _ in player_score_rows])
+        + ")",
+        *[row["player_id"] for row in player_score_rows],
+    ).fetchall()
+    display_name_list = {}
+    for row in name_rows:
+        display_name_list[row.id] = row.display_name
+    ranks = []
+    scored_player_set = {}
+    for player_score_row in player_score_rows:
+        # player_scoreが同一player_id内ではrow_numの降順でソートされているので
+        # 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
+        if scored_player_set.get(player_score_row["player_id"]) is not None:
+            continue
+
+        scored_player_set[player_score_row["player_id"]] = {}
+        ranks.append(
+            Ranking(
+                tenant_id=competition.tenant_id,
+                competition_id=competition_id,
+                rank=0,
+                score=player_score_row["score"],
+                player_id=player_score_row["player_id"],
+                player_display_name=display_name_list.get(
+                    player_score_row["player_id"]
+                ),
+                row_num=player_score_row["row_num"],
+            )
+        )
+    ranks.sort(key=lambda rank: rank.row_num)
+    ranks.sort(key=lambda rank: rank.score, reverse=True)
+    # ranking insert
+    for i, row in enumerate(ranks):
+        row.rank = i + 1
+    admin_db.execute(
+        "INSERT INTO ranking VALUES (%s, %s, %s, %s, %s, %s) AS new ON DUPLICATE KEY UPDATE score=new.score, player_id=new.player_id, player_display_name=new.player_display_name",
+        *[
+            [
+                row.tenant_id,
+                row.competition_id,
+                row.rank,
+                row.score,
+                row.player_id,
+                row.player_display_name,
+            ]
+            for row in ranks
+        ],
+    )
+
     return jsonify(SuccessResult(status=True, data={"rows": len(player_score_rows)}))
 
 
@@ -877,6 +923,17 @@ class CompetitionRank:
     row_num: int
 
 
+@dataclass
+class Ranking:
+    tenant_id: int
+    competition_id: str
+    rank: int
+    score: int
+    player_id: str
+    player_display_name: str
+    row_num: int
+
+
 @app.route("/api/player/competition/<competition_id>/ranking", methods=["GET"])
 def competition_ranking_handler(competition_id):
     """
@@ -917,49 +974,23 @@ def competition_ranking_handler(competition_id):
     if rank_after_str:
         rank_after = int(rank_after_str)
 
-    player_score_rows = tenant_db.execute(
-        "SELECT player_score.score, player_score.row_num, player.id AS player_id, player.display_name FROM player_score INNER JOIN player ON player_score.player_id = player.id WHERE player_score.tenant_id = ? AND player_score.competition_id = ? ORDER BY player_score.row_num DESC",
-        tenant_row.id,
+    # ranking参照
+    rows = admin_db.execute(
+        "SELECT * FROM ranking WHERE competition_id=%s LIMIT 100 OFFSET %s",
         competition_id,
-    ).fetchall()
-
+        rank_after,
+    )
     ranks = []
-    scored_player_set = {}
-    for player_score_row in player_score_rows:
-        # player_scoreが同一player_id内ではrow_numの降順でソートされているので
-        # 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
-        if scored_player_set.get(player_score_row.player_id) is not None:
-            continue
-
-        scored_player_set[player_score_row.player_id] = {}
+    for row in rows:
         ranks.append(
             CompetitionRank(
-                rank=0,
-                score=player_score_row.score,
-                player_id=player_score_row.player_id,
-                player_display_name=player_score_row.display_name,
-                row_num=player_score_row.row_num,
-            )
-        )
-
-    ranks.sort(key=lambda rank: rank.row_num)
-    ranks.sort(key=lambda rank: rank.score, reverse=True)
-
-    paged_ranks = []
-    for i, rank in enumerate(ranks):
-        if i < rank_after:
-            continue
-        paged_ranks.append(
-            CompetitionRank(
-                rank=i + 1,
-                score=rank.score,
-                player_id=rank.player_id,
-                player_display_name=rank.player_display_name,
+                rank=row.rank,
+                score=row.score,
+                player_id=row.player_id,
+                player_display_name=row.player_display_name,
                 row_num=0,
             )
         )
-        if len(paged_ranks) >= 100:
-            break
 
     return jsonify(
         SuccessResult(
@@ -970,7 +1001,7 @@ def competition_ranking_handler(competition_id):
                     title=competition.title,
                     is_finished=bool(competition.finished_at),
                 ),
-                "ranks": paged_ranks,
+                "ranks": ranks,
             },
         )
     )
