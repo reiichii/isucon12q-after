@@ -976,7 +976,8 @@ def competition_ranking_handler(competition_id):
 
     # ranking参照
     rows = admin_db.execute(
-        "SELECT * FROM ranking WHERE competition_id=%s LIMIT 100 OFFSET %s",
+        "SELECT * FROM ranking WHERE tenant_id=%s AND competition_id=%s ORDER BY `rank` LIMIT 100 OFFSET %s",
+        viewer.tenant_id,
         competition_id,
         rank_after,
     )
