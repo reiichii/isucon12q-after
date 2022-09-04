@@ -510,28 +510,27 @@ def players_add_handler():
 
     display_names = request.values.getlist("display_name[]")
 
-    player_details = []
+    rows = []
     for display_name in display_names:
         id = dispense_id()
-
         now = int(datetime.now().timestamp())
+        rows.append((id, viewer.tenant_id, display_name, False, now, now))
+    tenant_db.execute(
+        "INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        rows,
+    )
 
-        tenant_db.execute(
-            "INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            id,
-            viewer.tenant_id,
-            display_name,
-            False,
-            now,
-            now,
-        )
-
-        player = retrieve_player(tenant_db, id)
+    player_details = []
+    player_rows = tenant_db.execute(
+        "SELECT * FROM player WHERE id IN (" + ",".join(["?" for _ in rows]) + ")",
+        *[row[0] for row in rows],
+    ).fetchall()
+    for player in player_rows:
         player_details.append(
             PlayerDetail(
                 id=player.id,
                 display_name=player.display_name,
-                is_disqualified=player.is_disqualified,
+                is_disqualified=bool(player.is_disqualified),
             )
         )
 
